@@ -72,7 +72,7 @@ Getting from a fresh machine to a working system.
     python3 -m venv .venv
     source .venv/bin/activate
     pip install --upgrade pip
-    pip install -r requirements.txt
+    pip install -r REQUIREMENTS.txt
 
 Verify the venv is active any time you work on this — your prompt
 should show `(.venv)`. If not: `source .venv/bin/activate`.
