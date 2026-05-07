@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "id": "2026-05-07T14-00-35__0dbe19",
+  "received_at": "2026-05-07T15:04:19.748946+00:00",
+  "kind": "unknown",
+  "source": "gmail",
+  "source_metadata": {
+    "gmail_message_id": "19e02bdb72cda4f2",
+    "gmail_thread_id": "19e02bdb72cda4f2",
+    "from": "Alex Bommensath <alexandre.bommensath@gmail.com>",
+    "subject": "Hi there",
+    "internal_date": "2026-05-07T14:00:35+00:00"
+  },
+  "body_text": "This is a message\r\n",
+  "attachments": []
+}
