@@ -1,0 +1,8 @@
+Write /pipeline.
+
+You need to fix the documentation:
+    setting_labels_and_filters.md
+    README.md
+    module comments for reciever/ inbox/ auth/
+
+make a testing class maybe?
