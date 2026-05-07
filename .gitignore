@@ -4,4 +4,5 @@ __pycache__/
 state/
 inbox/pending/
 inbox/processed/
-.help-docs/
+.further_docs/
+
