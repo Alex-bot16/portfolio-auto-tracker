@@ -1,7 +1,7 @@
 """
-End-to-end test suite for the portfolio-tracker receiver.
+End-to-end test suite for the portfolio-tracker.
 
-Run from the project root:    python tests/test_all.py
+Run from the project root:    python -m tests.test_all
 
 This script verifies everything from the foundation up to the full
 receiver, in three tiers:
@@ -16,15 +16,13 @@ script exits 0 if everything passed, 1 otherwise.
 Before running, make sure:
     - You're in the project root and venv is active
     - .secrets/credentials.json exists
-    - .secrets/token.json exists (run python test_auth.py once first)
+    - .secrets/token.json exists (run python tests/test_auth.py once first)
     - At least one test email is queued in Gmail (or skip the
       end-to-end tier — it'll detect the empty queue)
 """
 
 import base64
-import json
 import os
-import shutil
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -98,6 +96,9 @@ try:
         Attachment,
         make_envelope_id,
     )
+    from inbox.config import (
+        PENDING_DIR,
+    )
     from receiver.gmail_parser import (
         ParsedMessage,
         ParsedAttachment,
@@ -110,8 +111,6 @@ try:
         QUEUED_LABEL,
         DONE_LABEL,
         FAILED_LABEL,
-        PENDING_DIR,
-        BLOBS_DIR,
     )
     r.check("all package imports resolve", True)
 except ImportError as e:
@@ -123,11 +122,11 @@ except ImportError as e:
 # ---- Config sanity ----
 r.check(
     "QUEUED_LABEL is set",
-    isinstance(QUEUED_LABEL, str) and QUEUED_LABEL,
+    isinstance(QUEUED_LABEL, str) and bool(QUEUED_LABEL),
 )
 r.check(
     "PENDING_DIR is a string path",
-    isinstance(PENDING_DIR, str) and PENDING_DIR,
+    isinstance(PENDING_DIR, str) and bool(PENDING_DIR),
 )
 r.check(
     "SCOPES has 3 entries",
@@ -295,7 +294,7 @@ env = Envelope(
     source_metadata={"gmail_message_id": "abc"},
     body_text="hello",
     attachments=[
-        Attachment("x.jpg", "inbox/blobs/x.jpg", "image/jpeg", 1234),
+        Attachment("x.jpg", "inbox/pending/abc/x.jpg", "image/jpeg", 1234),
     ],
 )
 raw = env.to_json()
@@ -349,7 +348,7 @@ if not Path(".secrets/credentials.json").exists():
     r.skip("integration tests", "no .secrets/credentials.json")
     service = None
 elif not Path(".secrets/token.json").exists():
-    r.skip("integration tests", "no .secrets/token.json — run test_auth.py first")
+    r.skip("integration tests", "no .secrets/token.json — run tests/test_auth.py first")
     service = None
 else:
     try:
@@ -364,6 +363,8 @@ else:
         service = None
 
 
+ids = []  # default; populated below if integration runs
+
 if service:
     from receiver.gmail_client import (
         get_label_id,
@@ -376,7 +377,7 @@ if service:
     try:
         queued_id = get_label_id(service, QUEUED_LABEL)
         r.check(f"gmail_client: queued label resolves",
-                isinstance(queued_id, str) and queued_id)
+                isinstance(queued_id, str) and bool(queued_id))
     except Exception as e:
         r.check("gmail_client: queued label resolves",
                 False, f"failed: {e}")
@@ -448,9 +449,8 @@ if not service:
 elif not ids:
     r.skip("end-to-end test", "queue is empty (forward an email and re-run)")
 else:
-    # Snapshot directories before
+    # Snapshot directory before
     pending_before = set(os.listdir(PENDING_DIR)) if os.path.exists(PENDING_DIR) else set()
-    blobs_before = set(os.listdir(BLOBS_DIR)) if os.path.exists(BLOBS_DIR) else set()
     queue_before = len(ids)
 
     try:
@@ -468,37 +468,43 @@ else:
 
     # Snapshot after
     pending_after = set(os.listdir(PENDING_DIR)) if os.path.exists(PENDING_DIR) else set()
-    blobs_after = set(os.listdir(BLOBS_DIR)) if os.path.exists(BLOBS_DIR) else set()
+    new_envelope_folders = pending_after - pending_before
 
-    new_envelopes = pending_after - pending_before
-    new_blobs = blobs_after - blobs_before
+    r.check(f"end-to-end: new envelope folder(s) written ({len(new_envelope_folders)} new)",
+            len(new_envelope_folders) >= 1)
 
-    r.check(f"end-to-end: new envelope(s) written ({len(new_envelopes)} new)",
-            len(new_envelopes) >= 1)
+    # Verify the envelope folder is well-formed
+    if new_envelope_folders:
+        first = sorted(new_envelope_folders)[0]
+        folder = os.path.join(PENDING_DIR, first)
 
-    # Verify the envelope is well-formed
-    if new_envelopes:
-        first = sorted(new_envelopes)[0]
-        path = os.path.join(PENDING_DIR, first)
+        r.check(f"end-to-end: new entry is a directory",
+                os.path.isdir(folder),
+                f"path: {folder}")
+
+        envelope_json = os.path.join(folder, "envelope.json")
+        r.check(f"end-to-end: envelope.json exists in folder",
+                os.path.exists(envelope_json))
+
         try:
-            with open(path) as f:
+            with open(envelope_json) as f:
                 env = Envelope.from_json(f.read())
-            r.check("end-to-end: written envelope is loadable",
+            r.check("end-to-end: envelope.json is loadable",
                     isinstance(env, Envelope))
-            r.check("end-to-end: written envelope has valid kind",
+            r.check("end-to-end: envelope has valid kind",
                     isinstance(env.kind, EnvelopeKind))
 
-            # If it's a screenshot, blob should exist
+            # If it's a screenshot, attachment files should exist in the folder
             if env.kind == EnvelopeKind.SCREENSHOT and env.attachments:
-                blob_path = env.attachments[0].path
-                r.check(f"end-to-end: blob exists at {blob_path}",
-                        os.path.exists(blob_path))
+                attachment_path = env.attachments[0].path
+                r.check(f"end-to-end: attachment file exists at {attachment_path}",
+                        os.path.exists(attachment_path))
 
-                size_on_disk = os.path.getsize(blob_path)
-                r.check(f"end-to-end: blob size matches envelope ({size_on_disk} bytes)",
+                size_on_disk = os.path.getsize(attachment_path)
+                r.check(f"end-to-end: attachment size matches envelope ({size_on_disk} bytes)",
                         size_on_disk == env.attachments[0].size_bytes)
         except Exception as e:
-            r.check("end-to-end: written envelope is loadable",
+            r.check("end-to-end: envelope.json is loadable",
                     False, f"failed: {e}")
 
     # Verify the queue drained

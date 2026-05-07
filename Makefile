@@ -14,13 +14,13 @@ pipeline:  ## Process pending envelopes → portfolio PDF
 # ─── Tests ───────────────────────────────────────────────────────────
 
 test:  ## Run the full test suite (auth, parser, classifier, etc.)
-	python tests/test_all.py
+	python -m tests.test_all.py
 
 test-claude:  ## Smoke test: verify Claude API works
-	python tests/test_claude.py
+	python -m tests.test_claude.py
 
 test-analysis:  ## Smoke test: full analysis on a pending envelope
-	python tests/test_analysis.py
+	python -m tests.test_analysis.py
 
 # ─── Cleanup ─────────────────────────────────────────────────────────
 
@@ -36,5 +36,5 @@ clean-cache:  ## Remove __pycache__ folders
 	@find . -type d -name __pycache__ -not -path './.venv/*' -exec rm -rf {} + 2>/dev/null || true
 	@echo "✓ pycache cleared"
 
-clean-all: clean-state clean-cache  ## Run all cleanups
+clean: clean-state clean-cache  ## Run all cleanups
 	@echo "✓ everything clean"
