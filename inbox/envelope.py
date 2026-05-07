@@ -155,7 +155,6 @@ In practice this should be rare. The schema is small and the fields
 are general enough to last.
 """
 
-
 import json
 import os
 import secrets

@@ -17,7 +17,3 @@ FAILED_LABEL = "portfolio/failed"
 # and apply the label QUEUED_LABEL.
 ALLOWED_SENDER = "alexandre.bommensath@gmail.com"
 FORWARD_ADDRESS = "bommensathalexandre@gmail.com"
-
-# === Filesystem paths ===
-PENDING_DIR = "inbox/pending"
-BLOBS_DIR = "inbox/blobs"

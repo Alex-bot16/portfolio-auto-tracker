@@ -93,7 +93,6 @@ from .config import (
     DONE_LABEL,
     FAILED_LABEL,
     PENDING_DIR,
-    BLOBS_DIR,
 )
 from .gmail_client import (
     get_label_id,
@@ -138,14 +137,18 @@ def run() -> None:
             failed += 1
 
     print(f"done — {succeeded} processed, {failed} failed")
-
 def _process_one(
     service,
     msg_id: str,
     queued_label_id: str,
     done_label_id: str,
 ) -> None:
-    """Process a single message: fetch, parse, save, write envelope, relabel.
+    """Process a single message: fetch, parse, save folder, write envelope, relabel.
+
+    All artifacts for this message land in ONE folder:
+        inbox/pending/<envelope_id>/
+            ├── envelope.json
+            └── <attachment files...>
 
     On any failure before the relabel step, raises — the message stays
     queued and will be retried next run. The relabel happens LAST so we
@@ -158,27 +161,27 @@ def _process_one(
     # 2. Classify
     kind = classify(parsed)
 
-    # 3. Generate the envelope ID up front — it's used in blob filenames
+    # 3. Generate envelope ID and create the folder up front
     envelope_id = make_envelope_id(parsed.internal_date)
+    envelope_folder = os.path.join(PENDING_DIR, envelope_id)
+    os.makedirs(envelope_folder, exist_ok=True)
 
-    # 4. Download attachments and save to inbox/blobs/
+    # 4. Download attachments directly into the envelope folder
     saved_attachments = []
     for parsed_att in parsed.attachments:
-        # Build the on-disk path (envelope_id prefix prevents collisions)
-        blob_filename = f"{envelope_id}__{parsed_att.filename}"
-        blob_path = os.path.join(BLOBS_DIR, blob_filename)
-        os.makedirs(BLOBS_DIR, exist_ok=True)
+        # Filename is just the original name — folder name disambiguates
+        attachment_path = os.path.join(envelope_folder, parsed_att.filename)
 
-        # Download the bytes and write atomically
+        # Atomic write: tmp then rename
         bytes_data = get_attachment_bytes(service, msg_id, parsed_att.attachment_id)
-        tmp_path = blob_path + ".tmp"
+        tmp_path = attachment_path + ".tmp"
         with open(tmp_path, "wb") as f:
             f.write(bytes_data)
-        os.rename(tmp_path, blob_path)
+        os.rename(tmp_path, attachment_path)
 
         saved_attachments.append(Attachment(
             filename=parsed_att.filename,
-            path=blob_path,
+            path=attachment_path,
             mime_type=parsed_att.mime_type,
             size_bytes=parsed_att.size_bytes,
         ))
@@ -201,11 +204,10 @@ def _process_one(
         attachments=saved_attachments,
     )
 
-    # 6. Write envelope to inbox/pending/ (atomic)
-    envelope_path = os.path.join(PENDING_DIR, f"{envelope_id}.json")
+    # 6. Write envelope.json INSIDE the envelope folder (atomic)
+    envelope_path = os.path.join(envelope_folder, "envelope.json")
     envelope.write_to(envelope_path)
 
     # 7. Relabel — must be LAST. If we crashed before this, the message
-    # stays queued and gets retried next run. If we relabeled too early,
-    # a crash mid-write would lose the data forever.
+    # stays queued and gets retried next run.
     relabel_message(service, msg_id, queued_label_id, done_label_id)

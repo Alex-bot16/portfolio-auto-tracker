@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Portfolio Summary · {{ report_date }}</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  @page {
+    size: A4;
+    margin: 16mm 14mm 20mm 14mm;
+    @bottom-center {
+      content: "Portfolio Summary · " counter(page) " / " counter(pages);
+      font-family: "Inter", -apple-system, "Segoe UI", sans-serif;
+      font-size: 8pt;
+      color: #9aa3ad;
+    }
+  }
+
+  :root {
+    --ink:        #1f2933;
+    --ink-soft:   #4a5763;
+    --muted:      #8b95a1;
+    --muted-2:    #b3bbc4;
+    --rule:       #e6e8eb;
+    --rule-soft:  #eef0f3;
+    --bg-soft:    #f6f7f9;
+    --hero:       #1a2535;
+    --hero-fg:    #ffffff;
+    --hero-soft:  #b8c2d0;
+    --accent:     #1aa15a;
+    --accent-bg:  #e6f5ec;
+    --negative:   #c4384a;
+    --ticker:     #6f7882;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    font-family: "Inter", -apple-system, "Segoe UI", "Helvetica Neue", sans-serif;
+    color: var(--ink);
+    font-size: 8.5pt;
+    line-height: 1.4;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ---------- HERO CARD ---------- */
+  .hero {
+    background: var(--hero);
+    color: var(--hero-fg);
+    border-radius: 6px;
+    padding: 18px 22px 20px;
+    margin-bottom: 14px;
+  }
+  .hero .label {
+    font-size: 7.5pt;
+    letter-spacing: 0.12em;
+    color: var(--hero-soft);
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+  .hero .total {
+    font-size: 30pt;
+    font-weight: 300;
+    letter-spacing: -0.01em;
+    line-height: 1;
+    margin-bottom: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+  .hero .pill {
+    display: inline-block;
+    background: rgba(26, 161, 90, 0.18);
+    color: #6ee0a0;
+    border: 1px solid rgba(26, 161, 90, 0.4);
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 8.5pt;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .hero .blurb {
+    color: var(--hero-soft);
+    font-size: 8.5pt;
+    line-height: 1.5;
+    max-width: 92%;
+  }
+
+  /* ---------- ACCOUNT SUMMARY CARDS ---------- */
+  .summary-row {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 22px;
+  }
+  .summary-card {
+    flex: 1;
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 12px 14px;
+  }
+  .summary-card .label {
+    font-size: 7pt;
+    letter-spacing: 0.12em;
+    color: var(--muted);
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+  .summary-card .value {
+    font-size: 15pt;
+    font-weight: 600;
+    margin-bottom: 2px;
+    font-variant-numeric: tabular-nums;
+  }
+  .summary-card .sub {
+    font-size: 8pt;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+  .summary-card .delta {
+    font-size: 8.5pt;
+    font-weight: 500;
+  }
+  .delta.pos { color: var(--accent); }
+  .delta.neg { color: var(--negative); }
+  .delta.neutral { color: var(--muted); }
+
+  /* ---------- SECTION HEADERS ---------- */
+  .section-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    border-top: 1px solid var(--rule);
+    padding-top: 10px;
+    margin-top: 14px;
+    margin-bottom: 10px;
+  }
+  .section-header h2 {
+    font-size: 13pt;
+    font-weight: 600;
+    margin: 0;
+    letter-spacing: -0.005em;
+    white-space: nowrap;
+  }
+  .section-header .right {
+    font-size: 9pt;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .section-header .right .pos { color: var(--accent); font-weight: 600; }
+  .section-header .right .neg { color: var(--negative); font-weight: 600; }
+
+  /* ---------- SUBSECTION ---------- */
+  .subsection-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin: 14px 0 6px 0;
+  }
+  .subsection-header h3 {
+    font-size: 10pt;
+    font-weight: 600;
+    margin: 0;
+  }
+  .subsection-header .right {
+    font-size: 8.5pt;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .description {
+    font-size: 8pt;
+    color: var(--muted);
+    margin: 0 0 8px 0;
+  }
+
+  /* ---------- WEALTH BREAKDOWN ---------- */
+  .breakdown {
+    border-top: 1px solid var(--rule);
+  }
+  .breakdown .row {
+    display: flex;
+    justify-content: space-between;
+    padding: 9px 2px;
+    border-bottom: 1px dashed var(--rule);
+    font-size: 9pt;
+  }
+  .breakdown .row:last-child { border-bottom: none; }
+  .breakdown .label-text { color: var(--ink-soft); }
+  .breakdown .label-text .secondary { color: var(--muted); }
+  .breakdown .value-text {
+    font-weight: 600;
+    color: var(--ink);
+    font-variant-numeric: tabular-nums;
+  }
+  .breakdown .value-text.muted { color: var(--muted); font-weight: 500; }
+
+  /* ---------- TABLES ---------- */
+  table.holdings {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 8.5pt;
+    margin-bottom: 4px;
+    table-layout: auto;
+  }
+  table.holdings thead th {
+    background: var(--bg-soft);
+    text-align: left;
+    font-size: 7pt;
+    letter-spacing: 0.1em;
+    color: var(--muted);
+    text-transform: uppercase;
+    font-weight: 600;
+    padding: 7px 8px;
+    border-top: 1px solid var(--rule);
+    border-bottom: 1px solid var(--rule);
+    white-space: nowrap;
+  }
+  table.holdings thead th.num { text-align: right; }
+  table.holdings tbody td {
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--rule-soft);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  table.holdings tbody td.holding {
+    color: var(--ink);
+    white-space: normal;
+  }
+  table.holdings tbody td.ticker {
+    font-family: "JetBrains Mono", "Menlo", "Consolas", monospace;
+    color: var(--ticker);
+    font-size: 8pt;
+  }
+  table.holdings tbody td.num {
+    text-align: right;
+    font-weight: 500;
+  }
+  table.holdings tbody td.num.bold { font-weight: 600; }
+  table.holdings tbody td.pos { color: var(--accent); font-weight: 600; text-align: right; white-space: nowrap; }
+  table.holdings tbody td.neg { color: var(--negative); font-weight: 600; text-align: right; white-space: nowrap; }
+  table.holdings tfoot td {
+    background: var(--bg-soft);
+    padding: 7px 8px;
+    font-weight: 600;
+    border-top: 1px solid var(--rule);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  table.holdings tfoot td.num { text-align: right; }
+  table.holdings tfoot td.pos { color: var(--accent); text-align: right; }
+  table.holdings tfoot td.neg { color: var(--negative); text-align: right; }
+
+  /* ---------- INLINE NOTE ---------- */
+  .inline-note {
+    font-size: 8.5pt;
+    color: var(--ink-soft);
+    margin: 10px 0 0 0;
+  }
+  .inline-note strong { color: var(--ink); }
+
+  /* ---------- FOOTER NOTES ---------- */
+  .footer-notes {
+    font-size: 7.5pt;
+    color: var(--muted);
+    line-height: 1.5;
+    margin-top: 18px;
+    padding-top: 10px;
+    border-top: 1px solid var(--rule);
+  }
+  .footer-notes strong { color: var(--ink-soft); }
+
+  /* ---------- UTILITIES ---------- */
+  .keep-together { page-break-inside: avoid; }
+</style>
+</head>
+<body>
+
+  {# ---------- HERO ---------- #}
+  <div class="hero">
+    <div class="label">Total Wealth · {{ report_date_caps }}</div>
+    <div class="total">{{ total_wealth }}</div>
+    <div class="pill">▲ Tracked unrealised gain {{ tracked_gain }}</div>
+    <div class="blurb">{{ summary_blurb }}</div>
+  </div>
+
+  {# ---------- SUMMARY CARDS ---------- #}
+  <div class="summary-row">
+    {% for card in summary_cards %}
+    <div class="summary-card">
+      <div class="label">{{ card.label }}</div>
+      <div class="value">{{ card.value }}</div>
+      <div class="sub">{{ card.sub }}</div>
+      <div class="delta {{ card.delta_class }}">{{ card.delta_arrow }} <strong>{{ card.delta_main }}</strong>{% if card.delta_extra %} {{ card.delta_extra }}{% endif %}</div>
+    </div>
+    {% endfor %}
+  </div>
+
+  {# ---------- SECTIONS ---------- #}
+  {% for section in sections %}
+  <div class="section-header">
+    <h2>{{ section.number }} · {{ section.title }}</h2>
+    <div class="right">{{ section.right_label | safe }}</div>
+  </div>
+
+  {% for sub in section.subsections %}
+
+    {% if sub.type == "breakdown" %}
+      <div class="subsection-header">
+        <h3>{{ sub.title }}</h3>
+        <div class="right">{{ sub.right_label }}</div>
+      </div>
+      <div class="breakdown">
+        {% for row in sub.rows %}
+        <div class="row">
+          <div class="label-text">{{ row.label }}{% if row.secondary %} <span class="secondary">· {{ row.secondary }}</span>{% endif %}</div>
+          <div class="value-text {% if row.muted %}muted{% endif %}">{{ row.value }}{% if row.percent %} · {{ row.percent }}{% endif %}</div>
+        </div>
+        {% endfor %}
+      </div>
+
+    {% elif sub.type == "table" %}
+      <div class="subsection-header">
+        <h3>{{ sub.title }}</h3>
+        {% if sub.right_label %}<div class="right">{{ sub.right_label }}</div>{% endif %}
+      </div>
+      {% if sub.description %}<p class="description">{{ sub.description }}</p>{% endif %}
+      <table class="holdings">
+        <thead>
+          <tr>
+            {% for col in sub.columns %}
+            <th class="{{ col.align }}">{{ col.label }}</th>
+            {% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in sub.rows %}
+          <tr>
+            {% for cell in row %}
+            <td class="{{ cell.cls }}">{{ cell.value }}</td>
+            {% endfor %}
+          </tr>
+          {% endfor %}
+        </tbody>
+        {% if sub.subtotal %}
+        <tfoot>
+          <tr>
+            {% for cell in sub.subtotal %}
+            <td class="{{ cell.cls }}">{{ cell.value }}</td>
+            {% endfor %}
+          </tr>
+        </tfoot>
+        {% endif %}
+      </table>
+
+    {% elif sub.type == "note" %}
+      <p class="inline-note">{{ sub.html | safe }}</p>
+
+    {% endif %}
+
+  {% endfor %}
+  {% endfor %}
+
+  {# ---------- FOOTER NOTES ---------- #}
+  {% if footer_notes %}
+  <div class="footer-notes">
+    {{ footer_notes | safe }}
+  </div>
+  {% endif %}
+
+</body>
+</html>

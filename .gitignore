@@ -1,3 +1,7 @@
 .secrets/
 __pycache__/
-venv/
+.venv/
+state/
+Makefile
+inbox/pending/
+inbox/processed/
