@@ -433,11 +433,89 @@ with tempfile.TemporaryDirectory() as tmp:
 
 # ─── Send ────────────────────────────────────────────────────────────
 r.section("SEND")
+import os
+import pipeline
+from io_layer.send import resolve_recipients, GmailSender, Sender
+
+# recipient resolution: override (str/list) -> DIGEST_RECIPIENTS -> SMTP_USER
+_keys = ("DIGEST_RECIPIENTS", "SMTP_USER", "SMTP_APP_PASSWORD")
+_env_save = {k: os.environ.get(k) for k in _keys}
 try:
-    send.send("Subj", "# body", attachment_path=None)
-    r.check("stub send runs", True)
+    for k in _keys: os.environ.pop(k, None)
+    r.check("recipients: override string splits",
+            resolve_recipients("a@x.com, b@y.com") == ["a@x.com", "b@y.com"])
+    r.check("recipients: override list passes through",
+            resolve_recipients(["a@x.com"]) == ["a@x.com"])
+    os.environ["DIGEST_RECIPIENTS"] = "env@x.com"
+    r.check("recipients: from DIGEST_RECIPIENTS", resolve_recipients() == ["env@x.com"])
+    os.environ.pop("DIGEST_RECIPIENTS")
+    os.environ["SMTP_USER"] = "me@x.com"
+    r.check("recipients: fall back to SMTP_USER (self)", resolve_recipients() == ["me@x.com"])
+    os.environ.pop("SMTP_USER")
+    r.check("recipients: empty when nothing set", resolve_recipients() == [])
+    # GmailSender refuses to send without recipients / creds (clear ValueError)
+    def _raises(fn):
+        try: fn(); return False
+        except ValueError: return True
+        except Exception: return False
+    r.check("Gmail send errors on no recipients",
+            _raises(lambda: GmailSender().send("s", "b", None, [])))
+    r.check("Gmail send errors on missing creds",
+            _raises(lambda: GmailSender().send("s", "b", None, ["a@x.com"])))
+finally:
+    for k, v in _env_save.items():
+        os.environ[k] = v if v is not None else os.environ.pop(k, "")
+
+# stub send runs with the recipient-aware signature
+try:
+    send.send("Subj", "# body", attachment_path=None, to="x@y.com")
+    r.check("stub send runs (recipient-aware)", True)
 except Exception as e:
-    r.check("stub send runs", False, str(e))
+    r.check("stub send runs (recipient-aware)", False, str(e))
 r.check("ACTIVE_SENDER implements Sender", isinstance(send.ACTIVE_SENDER, send.Sender))
+
+# GmailSender builds a correct MIME message (pure, no network)
+with tempfile.TemporaryDirectory() as tmp:
+    pdf = Path(tmp) / "portfolio_updated.pdf"; pdf.write_bytes(b"%PDF-1.7 fake")
+    msg = GmailSender()._build_message("Subj", "- **A** body", pdf,
+                                       ["a@x.com", "b@y.com"], sender="me@x.com")
+    types = [p.get_content_type() for p in msg.walk()]
+    r.check("message To header", msg["To"] == "a@x.com, b@y.com")
+    r.check("message From header", msg["From"] == "me@x.com")
+    r.check("message is multipart", msg.is_multipart())
+    r.check("has html alternative", "text/html" in types)
+    r.check("has pdf attachment", "application/pdf" in types)
+
+# send_run: replays an existing run folder via a capturing sender
+class _Capture(Sender):
+    def send(self, subject, body_markdown, attachment_path, recipients):
+        self.got = (subject, body_markdown, attachment_path, recipients)
+cap = _Capture(); _active = send.ACTIVE_SENDER
+with tempfile.TemporaryDirectory() as tmp:
+    folder = Path(tmp) / "2026-06-25T01-02-03_run"; folder.mkdir()
+    (folder / "research.md").write_text("# Portfolio Research\n- **OKLO** x", encoding="utf-8")
+    (folder / "portfolio_updated.pdf").write_bytes(b"%PDF-1.7 fake")
+    try:
+        send.ACTIVE_SENDER = cap
+        pipeline.send_run(folder, to="who@x.com")
+    finally:
+        send.ACTIVE_SENDER = _active
+    subj, body, att, recips = cap.got
+    r.check("send_run subject from folder date", subj == "Portfolio update — 2026-06-25")
+    r.check("send_run body is research.md", body.startswith("# Portfolio Research"))
+    r.check("send_run attaches the PDF", att is not None and Path(att).name == "portfolio_updated.pdf")
+    r.check("send_run honours TO override", recips == ["who@x.com"])
+
+# send_run errors clearly when there's no run
+with tempfile.TemporaryDirectory() as tmp:
+    _saved = config.OUTPUTS_HISTORY_DIR
+    try:
+        config.OUTPUTS_HISTORY_DIR = Path(tmp) / "history"
+        raised = False
+        try: pipeline.send_run()
+        except FileNotFoundError: raised = True
+        r.check("send_run errors when no run exists", raised)
+    finally:
+        config.OUTPUTS_HISTORY_DIR = _saved
 
 sys.exit(r.summary())

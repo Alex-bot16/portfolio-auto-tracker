@@ -1,4 +1,4 @@
-.PHONY: help accept-pdf digest digest-dry digest-fast research research-brief research-macro prices extract test test-online clean-state clean-cache clean-all
+.PHONY: help accept-pdf digest send full-digest digest-dry digest-fast research research-brief research-macro prices extract test test-online clean-state clean-cache clean-all
 
 help:  ## Show available commands
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-16s %s\n", $$1, $$2}'
@@ -8,8 +8,14 @@ help:  ## Show available commands
 accept-pdf:  ## Promote newest inbox PDF AND extract it into profile.json (one Claude call)
 	python -c "from pipeline import accept_pdf; accept_pdf()"
 
-digest:  ## Full run from profile: updated-values PDF + research, then send
+digest:  ## Build a run from profile (PDF + research), save it — does NOT send
 	python main.py
+
+send:  ## Send the latest saved run by email. Override recipient: make send TO=a@x.com
+	python -c "from pipeline import send_run; send_run(to=('$(TO)' or None))"
+
+full-digest:  ## Build a run AND send it. Override recipient: make full-digest TO=a@x.com
+	python -c "from pipeline import run_digest; run_digest(send_email=True, to=('$(TO)' or None))"
 
 digest-dry:  ## Run from profile WITHOUT research or PDF render (fast wiring check)
 	python -c "from pipeline import run_digest; run_digest(do_research=False, render_pdf=False)"
