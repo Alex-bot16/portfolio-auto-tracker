@@ -1,8 +1,18 @@
+# Secrets — never commit (the API key lives here, loaded at runtime)
 .secrets/
-__pycache__/
-.venv/
-state/
-inbox/pending/
-inbox/processed/
-.further_docs/
+.secret/
 
+# Personal data & generated state — never commit
+state/profile.json
+state/price_cache.json
+state/outputs/history/
+# Portfolio PDFs are personal holdings data — never commit any of them
+*.pdf
+
+# Project operating doc — kept local per preference
+CLAUDE.md
+
+# Python / tooling
+.venv/
+__pycache__/
+.DS_Store

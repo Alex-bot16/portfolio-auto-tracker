@@ -1,0 +1,103 @@
+.
+├── Makefile
+├── README.md
+├── auth
+│   ├── __init__.py
+│   ├── __pycache__
+│   │   ├── __init__.cpython-313.pyc
+│   │   ├── config.cpython-313.pyc
+│   │   ├── flows.cpython-313.pyc
+│   │   ├── providers.cpython-313.pyc
+│   │   └── services.cpython-313.pyc
+│   ├── config.py
+│   ├── flows.py
+│   ├── providers.py
+│   └── services.py
+├── inbox
+│   ├── __init__.py
+│   ├── __pycache__
+│   │   ├── __init__.cpython-313.pyc
+│   │   ├── config.cpython-313.pyc
+│   │   └── envelope.cpython-313.pyc
+│   ├── config.py
+│   ├── envelope.py
+│   ├── pending
+│   │   └── 2026-05-07T18-59-13__285ac0
+│   │       ├── IMG_4228.png
+│   │       ├── IMG_4229.png
+│   │       ├── IMG_4231.png
+│   │       ├── IMG_4232.png
+│   │       ├── IMG_4233.png
+│   │       └── envelope.json
+│   └── processed
+├── pipeline
+│   ├── __init__.py
+│   ├── __main__.py
+│   ├── __pycache__
+│   │   ├── __init__.cpython-313.pyc
+│   │   ├── analysis.cpython-313.pyc
+│   │   ├── intake.cpython-313.pyc
+│   │   ├── render.cpython-313.pyc
+│   │   └── storage.cpython-313.pyc
+│   ├── analysis.py
+│   ├── archive.py
+│   ├── config.py
+│   ├── intake.py
+│   ├── pipeline.py
+│   ├── render.py
+│   ├── send.py
+│   ├── storage.py
+│   └── templates
+│       ├── 27th_april_2026_portfolio.pdf
+│       └── example_rendered.html
+├── receiver
+│   ├── __init__.py
+│   ├── __main__.py
+│   ├── __pycache__
+│   │   ├── __init__.cpython-313.pyc
+│   │   ├── __main__.cpython-313.pyc
+│   │   ├── classifier.cpython-313.pyc
+│   │   ├── config.cpython-313.pyc
+│   │   ├── gmail_client.cpython-313.pyc
+│   │   ├── gmail_parser.cpython-313.pyc
+│   │   └── gmail_receiver.cpython-313.pyc
+│   ├── classifier.py
+│   ├── config.py
+│   ├── gmail_client.py
+│   ├── gmail_parser.py
+│   └── gmail_receiver.py
+├── requirements.txt
+├── state
+│   └── outputs
+│       ├── current
+│       │   ├── portfolio.html
+│       │   ├── portfolio.pdf
+│       │   └── source
+│       │       ├── IMG_4228.png
+│       │       ├── IMG_4229.png
+│       │       ├── IMG_4231.png
+│       │       ├── IMG_4232.png
+│       │       └── IMG_4233.png
+│       └── history
+│           └── 2026-05-08T11-17-24_portfolio
+│               ├── portfolio.html
+│               ├── portfolio.pdf
+│               └── source
+│                   ├── IMG_4228.png
+│                   ├── IMG_4229.png
+│                   ├── IMG_4231.png
+│                   ├── IMG_4232.png
+│                   └── IMG_4233.png
+├── tests
+│   ├── __init__.py
+│   ├── __pycache__
+│   │   ├── __init__.cpython-313.pyc
+│   │   └── test_analysis.cpython-313.pyc
+│   ├── test_all.py
+│   ├── test_analysis.py
+│   ├── test_archiving.sh
+│   └── test_claude.py
+├── todo.txt
+└── tree.txt
+
+22 directories, 79 files

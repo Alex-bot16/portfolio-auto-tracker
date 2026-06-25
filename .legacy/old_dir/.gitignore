@@ -1,0 +1,8 @@
+.secrets/
+__pycache__/
+.venv/
+state/
+inbox/pending/
+inbox/processed/
+.further_docs/
+

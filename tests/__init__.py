@@ -1,6 +1,1 @@
-"""
-Makes this folder a package.
-
-Allows for scripts to be easily importable
-
-"""
+"""Tests. Run the offline suite with `make test` (no API key, no network)."""

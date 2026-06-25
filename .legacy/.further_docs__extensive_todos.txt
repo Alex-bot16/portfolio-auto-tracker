@@ -1,0 +1,215 @@
+PORTFOLIO TRACKER — TODO
+========================
+
+Captured during the design conversation while building slice 2.
+The intent: ship the simple version first, then revisit these once
+real usage tells us which are actually problems.
+
+Don't try to solve any of these before slice 2 is end-to-end working.
+
+
+CURRENT POSITION
+----------------
+- Receiver complete with envelope-as-folder layout.
+- inbox/blobs/ removed (attachments live inside envelope folders).
+- inbox/processed/ kept (envelopes move there after pipeline success;
+  retains email metadata for future reply-correction lookups).
+- Pipeline slice 1 complete (intake + archive working with new layout).
+- Pipeline slice 2 in progress:
+    [x] render.py
+    [x] analysis.py (build_portfolio_html, multi-image support)
+    [x] storage.py (history/<timestamp>_portfolio/ + current/ mirror)
+    [x] envelope-folder rework (gmail_receiver, intake, archive)
+    [ ] send.py
+    [ ] wire it all in pipeline.py
+    [ ] end-to-end smoke test (forward → receive → pipeline → email)
+- Anthropic API works. Vision works. Multi-image works.
+- WeasyPrint working (after `brew install pango`).
+- Makefile in place (receive, pipeline, test, clean-all, etc.).
+- README rewritten with Open / Setup / Architecture sections.
+
+
+IMMEDIATE NEXT STEPS
+--------------------
+- Write send.py: outbound Gmail with PDF attached.
+- Wire pipeline.py orchestrator: intake → analysis → render → storage
+  → send → archive. Send must succeed before archive.
+- Update test_all.py for the envelope-folder layout (some tests likely
+  outdated after the rework).
+- End-to-end smoke: forward screenshot → make receive → make pipeline
+  → PDF arrives in inbox.
+
+
+DOCUMENTATION
+-------------
+- module docstrings missing/thin in: receiver/, inbox/, auth/.
+  Many files have good docstrings already (envelope.py, gmail_receiver.py).
+  Audit and fill gaps where useful.
+- setting_labels_and_filters.md: outdated. Either delete (content is
+  now in README's setup section) or move to docs/gmail_setup.md and
+  trim duplication.
+- Consider a tests/ class structure: today tests are scattered across
+  .tests/ and tests/. Consolidate to tests/ (no dot prefix) with a
+  proper __init__.py. Move test_claude.py and test_auth.py in.
+
+
+OPEN QUESTIONS — STATE & MULTI-ACCOUNT
+--------------------------------------
+1. Today the system rebuilds the portfolio from scratch every time.
+   If I forward only Revolut, the PDF shows only Revolut — Trading 212
+   and BoS disappear. Need a way to merge updates across runs.
+   - Option A: pass current.html as previous state to Claude
+   - Option B: re-add structured JSON for state
+   - Decide after seeing actual behaviour for a few weeks.
+
+2. How to handle closing an account.
+   - Email body saying "closed Trading 212"?
+   - Manually delete from current.html?
+   - Wait until it actually happens.
+
+3. How to handle opening a new account.
+   - First screenshot of the new account should add a section.
+   - Prompt would need to allow "this might be a new account."
+   - Defer until I actually open one.
+
+4. What if I forward only one account's screenshot.
+   - Should it update just that account, or replace the portfolio?
+   - See item 1.
+
+
+OPEN QUESTIONS — REPLY / CORRECTION FLOW
+----------------------------------------
+5. Reply-to-correct mechanism.
+   - Read the PDF, reply with corrections, get a fixed PDF back.
+   - Needs: parent portfolio lookup via In-Reply-To header.
+   - Needs: prompt that takes original screenshot + previous HTML +
+     reply text → produces revised HTML.
+   - Build after slice 2 ships.
+
+6. Reply with new screenshots attached.
+   - Classifier today returns SCREENSHOT for "reply with image"
+     because rule order: attachment check fires before reply check.
+   - Decision pending: change classifier order so REPLY wins, OR
+     handle this case in the pipeline as "screenshot supplementing
+     a previous portfolio."
+   - Build after slice 2 ships.
+
+7. Disambiguating reply intent.
+   - Today: REPLY = correction to most recent portfolio.
+   - Could later add: NOTE = standalone text update.
+   - Decide once usage shows whether the simple version is enough.
+
+8. Track attempt history per portfolio.
+   - history/<timestamp>_portfolio/attempts/1.html, 2.html, etc.
+   - Useful for audit + debugging.
+   - Add when reply-correction lands.
+
+
+OPEN QUESTIONS — DIGEST MODE
+----------------------------
+9. Scheduled digest cadence.
+   - Default 7 days. Make it a config variable.
+   - Skip-if-no-changes vs always-send debate. Default: always send.
+
+10. Digest-in-body vs digest-as-PDF-section.
+    - Decision so far: PDF = portfolio, email body = digest commentary.
+    - Toggle: INCLUDE_DIGEST_ON_SCHEDULED.
+    - Build only after slice 2 + correction loop work.
+
+11. save_digest() in storage.py.
+    - Different signature from save_portfolio (no source screenshots).
+    - References which portfolio it commented on.
+    - Build alongside generate_digest() in slice 4.
+
+12. Investment philosophy.
+    - Optional input to digest prompt only.
+    - Not used by build/correct modes.
+    - Lives in state/investment_philosophy.md.
+
+
+OPEN QUESTIONS — INPUT VALIDATION
+---------------------------------
+13. "Enough information?" gate before Claude.
+    - Cheap pre-check: image OR >50 chars body text?
+    - Smart check: Claude says "missing X, need more"?
+    - For now: skip both. Process whatever comes in. See what fails.
+
+
+OPEN QUESTIONS — ABSTRACTION / CODE STRUCTURE
+---------------------------------------------
+14. Move prompts from analysis.py to pipeline/templates/*.txt.
+    - Prompt-as-config, not prompt-as-string-in-code.
+    - Easy refactor after slice 2 works.
+
+15. Generalisation — should prompts be arguments?
+    - DECISION: no. Code generic, config specific.
+    - Templates are config (in pipeline/templates/), code stays simple.
+    - Don't engineer for hypothetical other users.
+
+16. Trash processed Gmail messages.
+    - Today: relabel queued → done. Email lingers in Gmail.
+    - Could trash via gmail.modify (already in scopes).
+    - Defer until system has been running reliably for weeks.
+
+
+OPEN QUESTIONS — PRODUCTION READINESS
+-------------------------------------
+17. GitHub Actions deployment.
+    - Schedule: receiver every 15 min, pipeline every N days.
+    - Token persistence is the tricky piece (token.json refresh in CI).
+    - Native deps in CI: apt-get install libpango-1.0-0 libpangoft2-1.0-0.
+    - Build only after both halves work locally end-to-end.
+
+18. Outbound email — the "from" address.
+    - Default: same Gmail account as receiver.
+    - Friendlier "from" name? Configurable subject?
+    - Decide when send.py is being written.
+
+19. Error handling philosophy in pipeline.
+    - What if Claude returns malformed HTML? WeasyPrint crashes.
+    - Today: pipeline run fails. Envelope stays in pending/, retries.
+    - Acceptable for now; add retry/fallback only if real failure rate
+      justifies it.
+
+20. Cost monitoring.
+    - $5/month spend limit set on Anthropic console.
+    - Worth occasionally checking the usage dashboard.
+
+21. Maintenance cleanup (long-term).
+    - Prune portfolios in history older than N months.
+    - Prune processed envelopes older than N days.
+    - Build only after the system has been running for months.
+
+
+KNOWN MINOR ISSUES
+------------------
+22. Email "from" parsing.
+    - Gmail wraps display name: "Alex Bommensath <alex@...>".
+    - source_metadata stores it as-is. Trivial fix with email.utils.parseaddr
+      when something downstream actually needs the bare email.
+
+23. .tests/ folder uses leading dot (hidden).
+    - Breaks `python -m .tests.foo` (relative module names).
+    - Force-fix at some point: rename to tests/, add __init__.py,
+      move scratch tests in.
+
+24. file.txt at project root.
+    - Leftover from `tree > file.txt`. Delete.
+
+25. Reference PDF in pipeline/templates/.
+    - 27th_april_2026_portfolio.pdf is reference, not runtime.
+    - Either move to docs/ or rename to make purpose obvious.
+
+26. Python version.
+    - Python 3.13 in current venv. Older 3.10 caches lingering in
+      __pycache__/. Cleared by `make clean-cache`.
+    - Google libraries will stop supporting 3.10 in October 2026 —
+      not relevant since we're on 3.13.
+
+
+THE DISCIPLINE
+--------------
+- Build slice 2 end-to-end before opening any of the above.
+- "Use it for a week" is a real check before adding features.
+- Most items above will resolve through actual use, not pre-emptive
+  design.

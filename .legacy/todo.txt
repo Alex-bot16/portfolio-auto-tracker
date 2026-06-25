@@ -1,0 +1,23 @@
+
+Analysis
+    make sure it can take in context from a pdf (previous portfolio)
+    fix up the prompt
+    think about going through a feedback loop.
+
+Testing
+    fundamentally rework testing
+    make sure all is ok
+
+
+Another structure
+    Supply a portfolio pdf
+    |
+    v
+    to json
+    |
+    v
+    every n days
+    run a script
+    that makes a new updated values portfolio
+    then writes an email to email x
+    (github could automate)

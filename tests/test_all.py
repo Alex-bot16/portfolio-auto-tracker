@@ -1,521 +1,443 @@
-"""
-End-to-end test suite for the portfolio-tracker.
+"""Offline unit tests — no API key, no network, no PDF needed.
 
-Run from the project root:    python -m tests.test_all
+Run:  python -m tests.test_all   (or `make test`)
 
-This script verifies everything from the foundation up to the full
-receiver, in three tiers:
+Covers the profile-driven architecture: profile save/load + classification
+views, the PDF-value fallback, FX conversion to a display currency, the
+single grand total, the conviction/index/sandbox research split + limit,
+rate-limit retry logic, the price cache, intake, storage, and send.
 
-    1. UNIT TESTS         — pure logic, no network, no auth
-    2. INTEGRATION TESTS  — touches Gmail, requires auth
-    3. END-TO-END TEST    — runs the full receiver, checks outputs
-
-Each tier prints PASS or FAIL for individual checks. At the end, the
-script exits 0 if everything passed, 1 otherwise.
-
-Before running, make sure:
-    - You're in the project root and venv is active
-    - .secrets/credentials.json exists
-    - .secrets/token.json exists (run python tests/test_auth.py once first)
-    - At least one test email is queued in Gmail (or skip the
-      end-to-end tier — it'll detect the empty queue)
+Network-dependent paths (live prices, live FX, live research) are stubbed.
 """
 
-import base64
-import os
 import sys
 import tempfile
-from datetime import datetime, timezone
+import time
 from pathlib import Path
 
 
-# ─────────────────────────────────────────────────────────────────────
-# Test runner — tracks pass/fail counts so we can exit nonzero on fail
-# ─────────────────────────────────────────────────────────────────────
-
 class Runner:
     def __init__(self):
-        self.passed = 0
-        self.failed = 0
-        self.skipped = 0
-
+        self.passed = 0; self.failed = 0
     def section(self, name):
-        print(f"\n{'═' * 70}")
-        print(f"  {name}")
-        print(f"{'═' * 70}")
-
-    def check(self, label, condition, details=""):
-        if condition:
-            print(f"  ✓ {label}")
-            self.passed += 1
+        print(f"\n{'=' * 64}\n  {name}\n{'=' * 64}")
+    def check(self, label, cond, details=""):
+        if cond:
+            print(f"  ok   {label}"); self.passed += 1
         else:
-            print(f"  ✗ {label}")
-            if details:
-                print(f"    {details}")
+            print(f"  FAIL {label}")
+            if details: print(f"       {details}")
             self.failed += 1
-
-    def skip(self, label, reason):
-        print(f"  ⊘ {label} — skipped ({reason})")
-        self.skipped += 1
-
     def summary(self):
-        print(f"\n{'═' * 70}")
         total = self.passed + self.failed
-        print(f"  RESULTS: {self.passed}/{total} passed, "
-              f"{self.failed} failed, {self.skipped} skipped")
-        print(f"{'═' * 70}\n")
+        print(f"\n{'=' * 64}\n  {self.passed}/{total} passed, {self.failed} failed\n{'=' * 64}\n")
         return 0 if self.failed == 0 else 1
 
 
 r = Runner()
 
-
-def b64(s: str) -> str:
-    """url-safe base64-encode a string for fake Gmail payloads."""
-    return base64.urlsafe_b64encode(s.encode("utf-8")).decode("ascii")
-
-
-# ─────────────────────────────────────────────────────────────────────
-# TIER 1: Unit tests
-# ─────────────────────────────────────────────────────────────────────
-
-r.section("TIER 1 — UNIT TESTS  (no network, no auth)")
-
-# ---- Imports ----
+# ─── Imports ─────────────────────────────────────────────────────────
+r.section("IMPORTS")
 try:
-    from auth import (
-        FileCredentialsProvider,
-        GoogleOAuthFlow,
-        GmailServiceFactory,
-        get_service,
-    )
-    from auth.config import CLIENT_SECRETS_PATH, TOKEN_PATH, SCOPES
-    from inbox.envelope import (
-        Envelope,
-        EnvelopeKind,
-        Attachment,
-        make_envelope_id,
-    )
-    from inbox.config import (
-        PENDING_DIR,
-    )
-    from receiver.gmail_parser import (
-        ParsedMessage,
-        ParsedAttachment,
-        parse_message,
-        _walk_parts,
-        _strip_html,
-    )
-    from receiver.classifier import classify
-    from receiver.config import (
-        QUEUED_LABEL,
-        DONE_LABEL,
-        FAILED_LABEL,
-    )
-    r.check("all package imports resolve", True)
-except ImportError as e:
-    r.check("all package imports resolve", False, f"ImportError: {e}")
-    print("\nCannot continue without imports. Aborting.")
+    import config
+    from core import fx, profile as profile_mod
+    from core.profile import Profile, ProfilePosition, ProfileWealth
+    from core.prices import Quote, fetch_quotes
+    from core.research import ResearchEntry
+    from core.digest import build_valuations_markdown, build_research_markdown
+    from io_layer import intake, storage, send
+    r.check("all modules import", True)
+except Exception as e:
+    r.check("all modules import", False, f"{type(e).__name__}: {e}")
     sys.exit(r.summary())
 
+# ─── Config (engine-only; personal data gone) ───────────────────────
+r.section("CONFIG: engine-only, personal data removed")
+r.check("MODEL set", isinstance(config.MODEL, str) and bool(config.MODEL))
+r.check("INDEX_TICKERS removed from config", not hasattr(config, "INDEX_TICKERS"))
+r.check("PRICE_SYMBOLS removed from config", not hasattr(config, "PRICE_SYMBOLS"))
+r.check("POSITION_THESES removed", not hasattr(config, "POSITION_THESES"))
+r.check("DEFAULT_DISPLAY_CURRENCY present", hasattr(config, "DEFAULT_DISPLAY_CURRENCY"))
+r.check("DEFAULT_SANDBOX_ACCOUNTS is a list", isinstance(config.DEFAULT_SANDBOX_ACCOUNTS, list))
+r.check("RETRY_MAX_ATTEMPTS is int", isinstance(config.RETRY_MAX_ATTEMPTS, int))
+r.check("FX_ENABLE is bool", isinstance(config.FX_ENABLE, bool))
 
-# ---- Config sanity ----
-r.check(
-    "QUEUED_LABEL is set",
-    isinstance(QUEUED_LABEL, str) and bool(QUEUED_LABEL),
-)
-r.check(
-    "PENDING_DIR is a string path",
-    isinstance(PENDING_DIR, str) and bool(PENDING_DIR),
-)
-r.check(
-    "SCOPES has 3 entries",
-    isinstance(SCOPES, list) and len(SCOPES) == 3,
-)
-r.check(
-    "SCOPES includes readonly + modify + send",
-    all(s in " ".join(SCOPES) for s in ["readonly", "modify", "send"]),
-)
-
-
-# ---- _walk_parts ----
-single_part = {"mimeType": "text/plain", "body": {"data": b64("hi")}}
-leaves = _walk_parts(single_part)
-r.check(
-    "_walk_parts handles single-part (no nesting)",
-    len(leaves) == 1 and leaves[0] is single_part,
-)
-
-deep = {
-    "mimeType": "multipart/mixed",
-    "parts": [
-        {
-            "mimeType": "multipart/alternative",
-            "parts": [
-                {"mimeType": "text/plain", "body": {"data": b64("plain")}},
-                {"mimeType": "text/html", "body": {"data": b64("<p>html</p>")}},
-            ],
-        },
-        {
-            "mimeType": "image/jpeg",
-            "filename": "x.jpg",
-            "body": {"attachmentId": "att1", "size": 100},
-        },
+# ─── Profile model + views ───────────────────────────────────────────
+r.section("PROFILE: models + classification views")
+prof = Profile(
+    display_currency="CHF",
+    sandbox_accounts=["Trading 212"],
+    positions=[
+        ProfilePosition("VUAA", "Vanguard S&P 500", 10, "Revolut", "USD", "index"),
+        ProfilePosition("OKLO", "Oklo", 5, "Revolut", "USD", "conviction", thesis="nuclear"),
+        ProfilePosition("KOPN", "Kopin", 5, "Trading 212", "USD", "sandbox"),
+        ProfilePosition("SMSN", "Samsung", 1, "Trading 212", "CHF", "sandbox",
+                        symbol_override="005930.KS", pdf_value_native=18.64),
     ],
-}
-leaves = _walk_parts(deep)
-r.check(
-    "_walk_parts flattens 2-level tree to 3 leaves",
-    len(leaves) == 3,
-    f"got {len(leaves)} leaves",
+    wealth=[ProfileWealth("Cash", 7146.0, "CHF", "Revolut")],
 )
+r.check("conviction() filters", [p.ticker for p in prof.conviction()] == ["OKLO"])
+r.check("index() filters", [p.ticker for p in prof.index()] == ["VUAA"])
+r.check("sandbox() filters", {p.ticker for p in prof.sandbox()} == {"KOPN", "SMSN"})
+r.check("symbol_for override wins", prof.symbol_for("SMSN") == "005930.KS")
+r.check("symbol_for falls back to bare ticker", prof.symbol_for("OKLO") == "OKLO")
+r.check("tickers() dedups+sorts", prof.tickers() == ["KOPN", "OKLO", "SMSN", "VUAA"])
 
-
-# ---- _strip_html ----
-r.check("_strip_html keeps text content",
-        _strip_html("<p>Hello</p>") == "Hello")
-r.check("_strip_html removes tags",
-        _strip_html("<b>bold</b> normal") == "bold normal")
-r.check("_strip_html drops URLs",
-        _strip_html("<a href='x'>click</a>") == "click")
-r.check("_strip_html decodes HTML entities",
-        _strip_html("M&amp;A") == "M&A")
-
-
-# ---- parse_message ----
-fake_msg = {
-    "id": "msg_001",
-    "threadId": "thread_001",
-    "internalDate": "1714142400000",  # 2024-04-26 14:00 UTC
-    "payload": {
-        "mimeType": "multipart/mixed",
-        "headers": [
-            {"name": "From", "value": "alex@gmail.com"},
-            {"name": "Subject", "value": "test"},
-        ],
-        "parts": [
-            {"mimeType": "text/plain", "body": {"data": b64("body text")}},
-            {
-                "mimeType": "image/jpeg",
-                "filename": "screenshot.jpeg",
-                "body": {"attachmentId": "ATT_X", "size": 5000},
-            },
-        ],
-    },
-}
-parsed = parse_message(fake_msg)
-r.check("parse_message extracts ID",
-        parsed.gmail_message_id == "msg_001")
-r.check("parse_message extracts From",
-        parsed.from_address == "alex@gmail.com")
-r.check("parse_message extracts Subject",
-        parsed.subject == "test")
-r.check("parse_message extracts body_text",
-        parsed.body_text == "body text")
-r.check("parse_message extracts 1 attachment",
-        len(parsed.attachments) == 1)
-r.check("parse_message attachment has filename",
-        parsed.attachments[0].filename == "screenshot.jpeg")
-
-
-# ---- Header case-insensitivity ----
-fake_msg_uppercase = {
-    "id": "msg_002",
-    "threadId": "thread_002",
-    "internalDate": "1714142400000",
-    "payload": {
-        "headers": [{"name": "FROM", "value": "x@y.com"}],
-        "body": {"data": b64("hi")},
-    },
-}
-parsed2 = parse_message(fake_msg_uppercase)
-r.check("parse_message handles uppercase header names",
-        parsed2.from_address == "x@y.com")
-
-
-# ---- Inline images skipped ----
-fake_msg_inline = {
-    "id": "msg_003",
-    "threadId": "thread_003",
-    "internalDate": "1714142400000",
-    "payload": {
-        "headers": [{"name": "From", "value": "x@y.com"}],
-        "parts": [
-            {"mimeType": "text/plain", "body": {"data": b64("hi")}},
-            {
-                "mimeType": "image/png",
-                "filename": "",  # inline image — no filename
-                "body": {"attachmentId": "INLINE_X", "size": 100},
-            },
-        ],
-    },
-}
-parsed3 = parse_message(fake_msg_inline)
-r.check("parse_message skips inline images (no filename)",
-        len(parsed3.attachments) == 0)
-
-
-# ---- classify ----
-def make_msg(attachments=None, in_reply_to=None):
-    return ParsedMessage(
-        gmail_message_id="x", gmail_thread_id="x",
-        from_address="alex@gmail.com", subject="t",
-        internal_date=datetime.now(timezone.utc),
-        in_reply_to=in_reply_to,
-        body_text="",
-        attachments=attachments or [],
-    )
-
-def make_att(mime="image/jpeg"):
-    return ParsedAttachment("x.jpg", mime, 100, "id1")
-
-
-r.check("classify: image → SCREENSHOT",
-        classify(make_msg(attachments=[make_att()])) == EnvelopeKind.SCREENSHOT)
-r.check("classify: pdf → SCREENSHOT",
-        classify(make_msg(attachments=[make_att("application/pdf")])) == EnvelopeKind.SCREENSHOT)
-r.check("classify: text-only attachment → UNKNOWN",
-        classify(make_msg(attachments=[make_att("text/plain")])) == EnvelopeKind.UNKNOWN)
-r.check("classify: reply with no attachment → REPLY",
-        classify(make_msg(in_reply_to="<msg@gmail.com>")) == EnvelopeKind.REPLY)
-r.check("classify: empty → UNKNOWN",
-        classify(make_msg()) == EnvelopeKind.UNKNOWN)
-r.check("classify: image+reply → SCREENSHOT (priority)",
-        classify(make_msg(attachments=[make_att()], in_reply_to="<x>")) == EnvelopeKind.SCREENSHOT)
-
-
-# ---- Envelope round-trip ----
-env = Envelope(
-    schema_version=1,
-    id=make_envelope_id(datetime.now(timezone.utc)),
-    received_at=datetime.now(timezone.utc),
-    kind=EnvelopeKind.SCREENSHOT,
-    source="gmail",
-    source_metadata={"gmail_message_id": "abc"},
-    body_text="hello",
-    attachments=[
-        Attachment("x.jpg", "inbox/pending/abc/x.jpg", "image/jpeg", 1234),
-    ],
-)
-raw = env.to_json()
-env2 = Envelope.from_json(raw)
-r.check("Envelope serializes to JSON",
-        isinstance(raw, str) and len(raw) > 0)
-r.check("Envelope round-trips: kind preserved",
-        env2.kind == EnvelopeKind.SCREENSHOT)
-r.check("Envelope round-trips: kind is enum, not string",
-        isinstance(env2.kind, EnvelopeKind))
-r.check("Envelope round-trips: received_at is datetime",
-        isinstance(env2.received_at, datetime))
-r.check("Envelope round-trips: attachments preserved",
-        len(env2.attachments) == 1 and env2.attachments[0].filename == "x.jpg")
-r.check("Envelope round-trips: produces identical JSON",
-        env2.to_json() == raw)
-
-
-# ---- Envelope.write_to is atomic ----
+# ─── Profile save / load round-trip ──────────────────────────────────
+r.section("PROFILE: save/load round-trip")
 with tempfile.TemporaryDirectory() as tmp:
-    target = os.path.join(tmp, "sub", "envelope.json")
-    env.write_to(target)
-    r.check("Envelope.write_to creates parent directory",
-            os.path.exists(target))
-    r.check("Envelope.write_to does NOT leave a .tmp file",
-            not os.path.exists(target + ".tmp"))
-    with open(target) as f:
-        loaded = Envelope.from_json(f.read())
-    r.check("Envelope.write_to output is loadable",
-            loaded.id == env.id)
+    p = Path(tmp) / "profile.json"
+    profile_mod.save(prof, p)
+    loaded = profile_mod.load(p)
+    r.check("round-trips position count", len(loaded.positions) == 4)
+    r.check("round-trips classification", loaded.sandbox()[0].classification == "sandbox")
+    r.check("round-trips display currency", loaded.display_currency == "CHF")
+    r.check("round-trips sandbox_accounts", loaded.sandbox_accounts == ["Trading 212"])
+    r.check("round-trips pdf fallback value",
+            any(x.pdf_value_native == 18.64 for x in loaded.positions))
+    r.check("round-trips wealth", loaded.wealth[0].value_native == 7146.0)
 
+# ─── FX conversion ───────────────────────────────────────────────────
+r.section("FX: conversion + soft failure")
+fx._cache.clear()
+fx._cache[("USD", "CHF")] = fx.Rate("USDCHF=X", 0.80, True)
+fx._cache[("EUR", "CHF")] = fx.Rate("EURCHF=X", 0.95, True)
+fx._cache[("XXX", "CHF")] = fx.Rate("XXXCHF=X", 0.0, False, "no rate")
+v, ok = fx.to_display(100.0, "USD", "CHF")
+r.check("USD->CHF converts", ok and abs(v - 80.0) < 1e-9)
+v, ok = fx.to_display(100.0, "CHF", "CHF")
+r.check("same-currency is identity, rate 1.0", ok and v == 100.0)
+v, ok = fx.to_display(100.0, "XXX", "CHF")
+r.check("unobtainable rate fails soft (0,False)", (not ok) and v == 0.0)
+v, ok = fx.to_display(100.0, "", "CHF")
+r.check("empty currency fails soft", not ok)
 
-# ---- make_envelope_id ----
-id1 = make_envelope_id(datetime(2026, 5, 7, 14, 22, 8, tzinfo=timezone.utc))
-id2 = make_envelope_id(datetime(2026, 5, 7, 14, 22, 8, tzinfo=timezone.utc))
-r.check("make_envelope_id is sortable (timestamp prefix)",
-        id1.startswith("2026-05-07T14-22-08__"))
-r.check("make_envelope_id has random suffix (no collisions)",
-        id1 != id2)
-r.check("make_envelope_id uses dashes, not colons (filesystem-safe)",
-        ":" not in id1)
+# ─── Valuations: live / PDF-fallback / unavailable + FX total ───────
+r.section("VALUATIONS: fallback, coverage, native breakdown, FX total")
+fx._cache.clear()
+fx._cache[("USD", "CHF")] = fx.Rate("USDCHF=X", 0.80, True)
+fx._cache[("CHF", "CHF")] = fx.Rate("", 1.0, True)
+vprof = Profile(
+    display_currency="CHF", sandbox_accounts=["Trading 212"],
+    positions=[
+        ProfilePosition("AAPL", "Apple", 10, "Revolut", "USD", "conviction"),       # live
+        ProfilePosition("SMSN", "Samsung", 1, "Trading 212", "CHF", "sandbox",
+                        pdf_value_native=18.64),                                     # PDF fallback
+        ProfilePosition("ZZZ", "Mystery", 2, "Trading 212", "", "sandbox"),         # unavailable
+    ],
+    wealth=[ProfileWealth("Cash", 1000.0, "CHF", "Revolut")],
+)
+quotes = {
+    "AAPL": Quote("AAPL", "AAPL", 250.0, "USD", True),
+    "SMSN": Quote("SMSN", "005930.KS", 0.0, "", False, "no price"),
+    "ZZZ":  Quote("ZZZ", "ZZZ", 0.0, "", False, "no price"),
+}
+vmd = build_valuations_markdown(vprof, quotes)
+r.check("live value computed (250*10)", "2,500.00 USD" in vmd)
+r.check("failed ticker w/ pdf value falls back", "18.64 CHF" in vmd)
+r.check("fallback tagged source PDF", "| PDF |" in vmd)
+r.check("unpriceable w/o pdf shows 'unavailable'", "unavailable" in vmd)
+r.check("NO raw error leaks", "TypeError" not in vmd and "Traceback" not in vmd)
+r.check("coverage counts reported", "priced live" in vmd and "from PDF value" in vmd)
+r.check("native breakdown present", "native breakdown" in vmd)
+r.check("investable CHF total present (2500*0.8=2000 + 18.64)",
+        "2,018.64 CHF" in vmd)
+r.check("wealth section present", "Additional wealth" in vmd)
+r.check("grand total line present", "Total wealth" in vmd)
+# grand total = investable 2018.64 + wealth 1000 = 3018.64
+r.check("grand total sums investable+wealth", "3,018.64 CHF" in vmd)
 
+# FX disabled path
+_fx_was = config.FX_ENABLE
+try:
+    config.FX_ENABLE = False
+    vmd_nofx = build_valuations_markdown(vprof, quotes)
+    r.check("FX off: no grand total", "Total wealth" not in vmd_nofx)
+    r.check("FX off: native breakdown still shown", "native breakdown" in vmd_nofx)
+finally:
+    config.FX_ENABLE = _fx_was
 
-# ─────────────────────────────────────────────────────────────────────
-# TIER 2: Integration tests (require auth + network)
-# ─────────────────────────────────────────────────────────────────────
+# ─── Divergence guard (two tiers) ────────────────────────────────────
+r.section("DIVERGENCE GUARD: flag vs revert")
+fx._cache.clear()
+fx._cache[("USD", "CHF")] = fx.Rate("USDCHF=X", 0.80, True)
+fx._cache[("KRW", "CHF")] = fx.Rate("KRWCHF=X", 0.00052, True)
+fx._cache[("CHF", "CHF")] = fx.Rate("", 1.0, True)
+gprof = Profile(
+    display_currency="CHF", sandbox_accounts=["Trading 212"],
+    positions=[
+        # ~23x off: live prices the wrong instrument -> revert to PDF value
+        ProfilePosition("SMSN", "Samsung", 0.00461632, "Trading 212", "CHF",
+                        "sandbox", symbol_override="005930.KS", pdf_value_native=18.64),
+        # ~5x up: plausibly a real move -> keep the live value, just flag it
+        ProfilePosition("MOON", "Moonshot", 1, "Revolut", "USD",
+                        "conviction", pdf_value_native=100.0),
+    ],
+    wealth=[],
+)
+gquotes = {
+    "SMSN": Quote("SMSN", "005930.KS", 340500.0, "KRW", True),   # live but wrong instrument
+    "MOON": Quote("MOON", "MOON", 500.0, "USD", True),           # genuinely 5x
+}
+gmd = build_valuations_markdown(gprof, gquotes)
+r.check("revert tier: uses PDF value", "18.64 CHF" in gmd)
+r.check("revert tier: row tagged 'PDF (live'", "PDF (live" in gmd)
+r.check("revert tier: wrong live value dropped", "0.82" not in gmd)
+r.check("revert tier: coverage shows reverted", "reverted to PDF" in gmd)
+r.check("flag tier: keeps live value (500 USD)", "500.00 USD" in gmd)
+r.check("flag tier: row tagged 'live ⚠'", "live ⚠" in gmd)
+r.check("flag tier: coverage shows flagged", "live but flagged" in gmd)
 
-r.section("TIER 2 — INTEGRATION TESTS  (requires auth + network)")
+# ─── Profile staleness gates the revert tier ─────────────────────────
+r.section("STALENESS: old PDF demotes revert -> flag + notice")
+fx._cache.clear()
+fx._cache[("USD", "CHF")] = fx.Rate("USDCHF=X", 0.80, True)   # used by later sections
+fx._cache[("KRW", "CHF")] = fx.Rate("KRWCHF=X", 0.00052, True)
+fx._cache[("CHF", "CHF")] = fx.Rate("", 1.0, True)
+sprof = Profile(
+    display_currency="CHF", sandbox_accounts=["Trading 212"],
+    positions=[
+        ProfilePosition("SMSN", "Samsung", 0.00461632, "Trading 212", "CHF",
+                        "sandbox", symbol_override="005930.KS", pdf_value_native=18.64),
+    ],
+    wealth=[], generated_at="2020-01-01T00:00:00Z",   # years old -> stale
+)
+squotes = {"SMSN": Quote("SMSN", "005930.KS", 340500.0, "KRW", True)}
+smd = build_valuations_markdown(sprof, squotes)
+r.check("age_days computed for valid timestamp", (sprof.age_days() or 0) > 1000)
+r.check("age_days None when timestamp missing", Profile("CHF", [], [], []).age_days() is None)
+r.check("stale: 'days old' notice shown", "days old" in smd)
+r.check("stale: notice nudges a fresh PDF", "accept-pdf" in smd)
+r.check("stale: revert demoted to flag (live kept)", "live ⚠" in smd)
+r.check("stale: NOT reverted to PDF", "PDF (live" not in smd)
+r.check("fresh profile shows no stale notice", "days old" not in gmd)
 
-if not Path(".secrets/credentials.json").exists():
-    r.skip("integration tests", "no .secrets/credentials.json")
-    service = None
-elif not Path(".secrets/token.json").exists():
-    r.skip("integration tests", "no .secrets/token.json — run tests/test_auth.py first")
-    service = None
-else:
-    try:
-        provider = FileCredentialsProvider(CLIENT_SECRETS_PATH, TOKEN_PATH)
-        flow = GoogleOAuthFlow(provider, SCOPES)
-        factory = GmailServiceFactory()
-        service = get_service(flow, factory)
-        r.check("auth: get_service returns a service object", service is not None)
-    except Exception as e:
-        r.check("auth: get_service returns a service object",
-                False, f"failed: {e}")
-        service = None
+# ─── INCLUDE_WEALTH toggle ───────────────────────────────────────────
+r.section("INCLUDE_WEALTH toggle")
+_w_was = config.INCLUDE_WEALTH
+try:
+    config.INCLUDE_WEALTH = True
+    on = build_valuations_markdown(vprof, quotes)
+    r.check("wealth ON: section shown", "Additional wealth" in on)
+    r.check("wealth ON: total labelled 'Total wealth'", "Total wealth" in on)
+    r.check("wealth ON: total includes wealth (3,018.64)", "3,018.64 CHF" in on)
 
+    config.INCLUDE_WEALTH = False
+    off = build_valuations_markdown(vprof, quotes)
+    r.check("wealth OFF: section hidden", "Additional wealth" not in off)
+    r.check("wealth OFF: relabelled 'Total investable'", "Total investable" in off)
+    r.check("wealth OFF: no 'Total wealth'", "Total wealth" not in off)
+    r.check("wealth OFF: total is investable-only (2,018.64)", "2,018.64 CHF" in off)
+    r.check("wealth OFF: investable holdings still present", "Investable holdings" in off)
+finally:
+    config.INCLUDE_WEALTH = _w_was
 
-ids = []  # default; populated below if integration runs
+# ─── Cost-basis running gain% ────────────────────────────────────────
+r.section("GAIN%: running return vs PDF-implied cost basis")
+from core.digest import _cost_basis_native
+r.check("cost basis 105 @ +5% -> 100",
+        abs(_cost_basis_native(ProfilePosition("X", "x", 1, pdf_value_native=105, pdf_gain_pct=5)) - 100.0) < 1e-9)
+r.check("cost basis 80 @ -20% -> 100",
+        abs(_cost_basis_native(ProfilePosition("X", "x", 1, pdf_value_native=80, pdf_gain_pct=-20)) - 100.0) < 1e-9)
+r.check("cost basis None without gain%",
+        _cost_basis_native(ProfilePosition("X", "x", 1, pdf_value_native=105)) is None)
+r.check("cost basis None at -100% (no div0)",
+        _cost_basis_native(ProfilePosition("X", "x", 1, pdf_value_native=105, pdf_gain_pct=-100)) is None)
+fx._cache.clear()
+fx._cache[("USD", "CHF")] = fx.Rate("USDCHF=X", 1.0, True)
+fx._cache[("CHF", "CHF")] = fx.Rate("", 1.0, True)
+gnprof = Profile(
+    display_currency="CHF", sandbox_accounts=[],
+    positions=[   # PDF showed 105 at +5% -> bought at 100; live 110 -> +10%
+        ProfilePosition("STK", "Stock", 1, "Revolut", "USD", "conviction",
+                        pdf_value_native=105.0, pdf_gain_pct=5.0),
+    ],
+    wealth=[],
+)
+gnmd = build_valuations_markdown(gnprof, {"STK": Quote("STK", "STK", 110.0, "USD", True)})
+r.check("Gain % column present", "Gain %" in gnmd)
+r.check("running gain computed (+10.0%)", "+10.0%" in gnmd)
+r.check("portfolio total gain vs cost shown", "total gain vs cost: +10.0%" in gnmd)
 
-if service:
-    from receiver.gmail_client import (
-        get_label_id,
-        search_queued_messages,
-        fetch_message,
-        get_attachment_bytes,
+# Void ambiguous/invalid gain% at extraction (a wrong cost basis is worse).
+from core.holdings import _coerce_gain_pct
+r.check("coerce keeps a valid number", _coerce_gain_pct(5) == 5.0)
+r.check("coerce keeps a valid loss", _coerce_gain_pct(-50) == -50.0)
+r.check("coerce voids non-numeric", _coerce_gain_pct("n/a") is None)
+r.check("coerce voids None", _coerce_gain_pct(None) is None)
+r.check("coerce voids impossible -100%", _coerce_gain_pct(-100) is None)
+r.check("coerce voids impossible <-100%", _coerce_gain_pct(-150) is None)
+r.check("cost basis voids non-numeric gain (hand-edited JSON)",
+        _cost_basis_native(ProfilePosition("X", "x", 1, pdf_value_native=100, pdf_gain_pct="oops")) is None)
+
+# ─── Research split (conviction / index / sandbox) ──────────────────
+r.section("RESEARCH: conviction-only, index->macro, sandbox skipped")
+import core.research as rm
+calls = {"brief": [], "deep": [], "macro": []}
+def fake_brief(t, th="", name="", symbol=""): calls["brief"].append(t); return ResearchEntry(t, "x", brief=True)
+def fake_deep(t, th="", name="", symbol=""):  calls["deep"].append(t);  return ResearchEntry(t, "x")
+def fake_macro(ix, brief=True): calls["macro"].append(tuple(ix)); return ResearchEntry("MARKET", "x", brief=brief)
+orig = (rm.research_brief, rm.research_position_deep, rm.research_macro)
+orig_cfg = (config.RESEARCH_BRIEF_FOR_EMAIL, config.RESEARCH_LIMIT, config.RESEARCH_PACE_SECONDS)
+try:
+    rm.research_brief, rm.research_position_deep, rm.research_macro = fake_brief, fake_deep, fake_macro
+    config.RESEARCH_BRIEF_FOR_EMAIL = True
+    config.RESEARCH_LIMIT = None
+    config.RESEARCH_PACE_SECONDS = 0  # no sleeping in tests
+    rprof = Profile(
+        display_currency="CHF", sandbox_accounts=["Trading 212"],
+        positions=[
+            ProfilePosition("VUAA", "S&P 500", 10, "Revolut", "USD", "index"),
+            ProfilePosition("WEXE", "World exUS", 5, "Revolut", "EUR", "index"),
+            ProfilePosition("OKLO", "Oklo", 5, "Revolut", "USD", "conviction", thesis="nuclear"),
+            ProfilePosition("OKLO", "Oklo", 2, "Revolut", "USD", "conviction"),  # dup
+            ProfilePosition("META", "Meta", 3, "Revolut", "USD", "conviction"),
+            ProfilePosition("KOPN", "Kopin", 5, "Trading 212", "USD", "sandbox"),
+            ProfilePosition("PLTR", "Palantir", 1, "Trading 212", "USD", "sandbox"),
+        ],
+        wealth=[],
     )
+    seen = []
+    entries = rm.research_profile(rprof, on_progress=lambda l, s: seen.append((l, s)))
+    r.check("macro called once (index funds)", len(calls["macro"]) == 1)
+    r.check("macro got both index tickers", set(calls["macro"][0]) == {"VUAA", "WEXE"})
+    r.check("brief used (not deep)", calls["deep"] == [])
+    r.check("conviction researched", set(calls["brief"]) == {"OKLO", "META"})
+    r.check("dup conviction researched once", calls["brief"].count("OKLO") == 1)
+    r.check("sandbox NOT researched", "KOPN" not in calls["brief"] and "PLTR" not in calls["brief"])
+    r.check("macro entry first", entries[0].label == "MARKET")
+    r.check("progress callback fired", len(seen) >= 4)
 
-    # ---- get_label_id ----
+    # limit caps conviction
+    calls["brief"].clear()
+    config.RESEARCH_LIMIT = 1
+    rm.research_profile(rprof)
+    r.check("RESEARCH_LIMIT caps conviction", len(calls["brief"]) == 1)
+finally:
+    rm.research_brief, rm.research_position_deep, rm.research_macro = orig
+    (config.RESEARCH_BRIEF_FOR_EMAIL, config.RESEARCH_LIMIT, config.RESEARCH_PACE_SECONDS) = orig_cfg
+
+# ─── Research markdown (email body) ──────────────────────────────────
+r.section("RESEARCH MARKDOWN")
+entries = [
+    ResearchEntry("MARKET", "- macro ([s](http://x))", brief=True),
+    ResearchEntry("OKLO", "- **OKLO** — milestone ([s](http://y))", brief=True),
+    ResearchEntry("ASTS", "", ok=False, note="no news", brief=True),
+]
+rmd = build_research_markdown(entries)
+r.check("has research header", "Portfolio Research" in rmd)
+r.check("has market backdrop section", "Market backdrop" in rmd)
+r.check("has conviction section", "Conviction positions" in rmd)
+r.check("brief failed entry inline", "_unavailable: no news_" in rmd)
+r.check("empty research handled", "No research run" in build_research_markdown([]))
+
+# ─── Rate-limit retry logic ──────────────────────────────────────────
+r.section("RATE-LIMIT: retry detection + backoff")
+import core.claude_client as cc
+r.check("detects RateLimitError by name",
+        cc._is_rate_limit(type("RateLimitError", (Exception,), {})()))
+r.check("detects 429 in message", cc._is_rate_limit(Exception("Error code: 429")))
+r.check("detects rate_limit string", cc._is_rate_limit(Exception("rate_limit_error")))
+r.check("ignores unrelated error", not cc._is_rate_limit(ValueError("bad json")))
+# retry actually retries then re-raises, without real network
+attempts = {"n": 0}
+class _RL(Exception): pass
+def boom(**kw):
+    attempts["n"] += 1
+    raise _RL("429 rate_limit_error")
+_orig_sleep = time.sleep
+_orig_create = cc._client.messages.create
+_orig_attempts, _orig_wait = config.RETRY_MAX_ATTEMPTS, config.RETRY_BASE_WAIT_SECONDS
+try:
+    time.sleep = lambda s: None       # don't actually wait
+    cc._client.messages.create = boom
+    config.RETRY_MAX_ATTEMPTS = 3
+    config.RETRY_BASE_WAIT_SECONDS = 0
+    raised = False
     try:
-        queued_id = get_label_id(service, QUEUED_LABEL)
-        r.check(f"gmail_client: queued label resolves",
-                isinstance(queued_id, str) and bool(queued_id))
-    except Exception as e:
-        r.check("gmail_client: queued label resolves",
-                False, f"failed: {e}")
-        queued_id = None
+        cc._create_with_retry(model="m", max_tokens=10, messages=[])
+    except _RL:
+        raised = True
+    r.check("retries up to RETRY_MAX_ATTEMPTS", attempts["n"] == 3)
+    r.check("re-raises after exhausting retries", raised)
+finally:
+    time.sleep = _orig_sleep
+    cc._client.messages.create = _orig_create
+    config.RETRY_MAX_ATTEMPTS, config.RETRY_BASE_WAIT_SECONDS = _orig_attempts, _orig_wait
 
+# ─── Price cache ─────────────────────────────────────────────────────
+r.section("PRICE CACHE: TTL reuse")
+import core.prices as pr
+with tempfile.TemporaryDirectory() as tmp:
+    saved = config.PRICE_CACHE_PATH
+    fetch_calls = {"n": 0}
+    orig_fetch = pr._fetch_one
     try:
-        get_label_id(service, "this-label-does-not-exist-xyz")
-        r.check("gmail_client: missing label raises ValueError",
-                False, "didn't raise")
-    except ValueError:
-        r.check("gmail_client: missing label raises ValueError", True)
-    except Exception as e:
-        r.check("gmail_client: missing label raises ValueError",
-                False, f"raised wrong type: {type(e).__name__}")
+        config.PRICE_CACHE_PATH = Path(tmp) / "price_cache.json"
+        def counting_fetch(ticker, symbol):
+            fetch_calls["n"] += 1
+            return Quote(ticker, symbol, 100.0, "USD", True)
+        pr._fetch_one = counting_fetch
+        # first call: cache miss -> fetch
+        q1 = fetch_quotes({"AAPL": "AAPL"}, use_cache=True, ttl_seconds=3600)
+        r.check("first fetch hits network", fetch_calls["n"] == 1 and q1["AAPL"].ok)
+        # second call within TTL: cache hit -> no fetch
+        q2 = fetch_quotes({"AAPL": "AAPL"}, use_cache=True, ttl_seconds=3600)
+        r.check("second fetch served from cache", fetch_calls["n"] == 1)
+        r.check("cached quote noted as cache", q2["AAPL"].note == "cache")
+        # TTL 0: always refetch
+        fetch_quotes({"AAPL": "AAPL"}, use_cache=True, ttl_seconds=0)
+        r.check("ttl=0 forces refetch", fetch_calls["n"] == 2)
+        # use_cache=False: always fetch
+        fetch_quotes({"AAPL": "AAPL"}, use_cache=False)
+        r.check("use_cache=False bypasses cache", fetch_calls["n"] == 3)
+    finally:
+        pr._fetch_one = orig_fetch
+        config.PRICE_CACHE_PATH = saved
 
-    # ---- search_queued_messages ----
+# ─── Intake ──────────────────────────────────────────────────────────
+r.section("INTAKE")
+with tempfile.TemporaryDirectory() as tmp:
+    tmp = Path(tmp)
+    saved = (config.INBOX_DIR, config.CURRENT_DIR, config.CURRENT_PDF, config.PORTFOLIOS_DIR)
     try:
-        ids = search_queued_messages(service, QUEUED_LABEL)
-        r.check("gmail_client: search returns a list",
-                isinstance(ids, list))
-        print(f"    queue currently holds {len(ids)} message(s)")
-    except Exception as e:
-        r.check("gmail_client: search returns a list",
-                False, f"failed: {e}")
-        ids = []
+        config.INBOX_DIR = tmp / "inbox"; config.CURRENT_DIR = tmp / "current"
+        config.CURRENT_PDF = config.CURRENT_DIR / "portfolio.pdf"
+        config.PORTFOLIOS_DIR = tmp / "portfolios"; config.INBOX_DIR.mkdir(parents=True)
+        raised = False
+        try: intake.accept_latest_pdf()
+        except FileNotFoundError: raised = True
+        r.check("raises when inbox empty", raised)
+        (config.INBOX_DIR / "p1.pdf").write_bytes(b"%PDF one")
+        res = intake.accept_latest_pdf()
+        r.check("promotes to current", res.read_bytes() == b"%PDF one")
+        (config.INBOX_DIR / "p2.pdf").write_bytes(b"%PDF two")
+        intake.accept_latest_pdf()
+        r.check("second promoted", config.CURRENT_PDF.read_bytes() == b"%PDF two")
+        r.check("prior archived", len(list(config.PORTFOLIOS_DIR.glob("*.pdf"))) == 1)
+    finally:
+        (config.INBOX_DIR, config.CURRENT_DIR, config.CURRENT_PDF, config.PORTFOLIOS_DIR) = saved
 
-    # ---- fetch + parse + classify on a real message ----
-    if ids:
-        msg_id = ids[0]
-        try:
-            raw = fetch_message(service, msg_id)
-            r.check("gmail_client: fetch_message returns dict",
-                    isinstance(raw, dict) and "id" in raw)
-        except Exception as e:
-            r.check("gmail_client: fetch_message returns dict",
-                    False, f"failed: {e}")
-            raw = None
-
-        if raw:
-            parsed = parse_message(raw)
-            r.check("real message: parser produces ParsedMessage",
-                    isinstance(parsed, ParsedMessage))
-            r.check("real message: from_address present",
-                    bool(parsed.from_address))
-
-            kind = classify(parsed)
-            r.check(f"real message: classifier returns {kind.value}",
-                    isinstance(kind, EnvelopeKind))
-
-            print(f"    real message details:")
-            print(f"      from:       {parsed.from_address}")
-            print(f"      subject:    {parsed.subject}")
-            print(f"      kind:       {kind.value}")
-            print(f"      attachments: {len(parsed.attachments)}")
-            print(f"      body_text:  {parsed.body_text[:60]!r}"
-                  + ("..." if len(parsed.body_text) > 60 else ""))
-    else:
-        r.skip("real-message tests", "queue is empty")
-
-
-# ─────────────────────────────────────────────────────────────────────
-# TIER 3: End-to-end (full receiver run + outputs check)
-# ─────────────────────────────────────────────────────────────────────
-
-r.section("TIER 3 — END-TO-END  (full receiver run)")
-
-if not service:
-    r.skip("end-to-end test", "no auth available")
-elif not ids:
-    r.skip("end-to-end test", "queue is empty (forward an email and re-run)")
-else:
-    # Snapshot directory before
-    pending_before = set(os.listdir(PENDING_DIR)) if os.path.exists(PENDING_DIR) else set()
-    queue_before = len(ids)
-
+# ─── Storage ─────────────────────────────────────────────────────────
+r.section("STORAGE")
+with tempfile.TemporaryDirectory() as tmp:
+    saved = config.OUTPUTS_HISTORY_DIR
     try:
-        from receiver.gmail_receiver import run as run_receiver
-        print(f"    running receiver against {queue_before} queued message(s)...")
-        run_receiver()
-        r.check("end-to-end: receiver completed without exception", True)
-    except Exception as e:
-        r.check("end-to-end: receiver completed without exception",
-                False, f"crashed: {e}")
-        print(f"\n  full traceback follows:")
-        import traceback
-        traceback.print_exc()
-        sys.exit(r.summary())
+        config.OUTPUTS_HISTORY_DIR = Path(tmp) / "history"
+        folder = storage.save_run("# vals\n", "# research\n", render_pdf=False)
+        r.check("writes portfolio_updated.md", (folder / "portfolio_updated.md").exists())
+        r.check("writes research.md", (folder / "research.md").exists())
+        r.check("no PDF when render off", not (folder / "portfolio_updated.pdf").exists())
+    finally:
+        config.OUTPUTS_HISTORY_DIR = saved
 
-    # Snapshot after
-    pending_after = set(os.listdir(PENDING_DIR)) if os.path.exists(PENDING_DIR) else set()
-    new_envelope_folders = pending_after - pending_before
-
-    r.check(f"end-to-end: new envelope folder(s) written ({len(new_envelope_folders)} new)",
-            len(new_envelope_folders) >= 1)
-
-    # Verify the envelope folder is well-formed
-    if new_envelope_folders:
-        first = sorted(new_envelope_folders)[0]
-        folder = os.path.join(PENDING_DIR, first)
-
-        r.check(f"end-to-end: new entry is a directory",
-                os.path.isdir(folder),
-                f"path: {folder}")
-
-        envelope_json = os.path.join(folder, "envelope.json")
-        r.check(f"end-to-end: envelope.json exists in folder",
-                os.path.exists(envelope_json))
-
-        try:
-            with open(envelope_json) as f:
-                env = Envelope.from_json(f.read())
-            r.check("end-to-end: envelope.json is loadable",
-                    isinstance(env, Envelope))
-            r.check("end-to-end: envelope has valid kind",
-                    isinstance(env.kind, EnvelopeKind))
-
-            # If it's a screenshot, attachment files should exist in the folder
-            if env.kind == EnvelopeKind.SCREENSHOT and env.attachments:
-                attachment_path = env.attachments[0].path
-                r.check(f"end-to-end: attachment file exists at {attachment_path}",
-                        os.path.exists(attachment_path))
-
-                size_on_disk = os.path.getsize(attachment_path)
-                r.check(f"end-to-end: attachment size matches envelope ({size_on_disk} bytes)",
-                        size_on_disk == env.attachments[0].size_bytes)
-        except Exception as e:
-            r.check("end-to-end: envelope.json is loadable",
-                    False, f"failed: {e}")
-
-    # Verify the queue drained
-    ids_after = search_queued_messages(service, QUEUED_LABEL)
-    r.check(f"end-to-end: queue drained "
-            f"({queue_before} → {len(ids_after)} messages)",
-            len(ids_after) < queue_before)
-
-
-# ─────────────────────────────────────────────────────────────────────
-# Summary
-# ─────────────────────────────────────────────────────────────────────
+# ─── Send ────────────────────────────────────────────────────────────
+r.section("SEND")
+try:
+    send.send("Subj", "# body", attachment_path=None)
+    r.check("stub send runs", True)
+except Exception as e:
+    r.check("stub send runs", False, str(e))
+r.check("ACTIVE_SENDER implements Sender", isinstance(send.ACTIVE_SENDER, send.Sender))
 
 sys.exit(r.summary())
